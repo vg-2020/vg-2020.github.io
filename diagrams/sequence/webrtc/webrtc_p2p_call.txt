@@ -1,0 +1,155 @@
+title webrtc_p2p_call
+
+participant Peer.AppA
+participant WebRTC
+participant PeerConnectionFactory
+participant ConnectionContext
+participant PeerConnection
+participant JsepTransportController 
+participant SdpOfferAnswerHandler
+participant WebRtcSessionDescriptionFactory
+participant MediaSessionDescriptionFactory
+participant RtpTransmissionManager
+participant RtpTransceiver
+participant VideoTrack
+
+participant Signalling
+
+participant Peer.AppB
+
+# prepare init params
+    note left of WebRTC 
+        CreateBuiltinAudioEncoderFactory->AudioEncoderFactory
+        CreateBuiltinAudioDecoderFactory->AudioDecoderFactory
+        CreateBuiltinVideoEncoderFactory->VideoEncoderFactory
+        CreateBuiltinVideoDecoderFactory->VideoDecoderFactory
+    end note
+Peer.AppA -> WebRTC : CreatePeerConnectionFactory
+    note left of WebRTC
+        instance TaskQueueWinFactory
+        instance CallFactory
+        instance RtcEventLogFactory
+        instance AudioProcessingBuilder
+    end note
+WebRTC -> WebRTC : CreateMediaEngine
+    note right of WebRTC
+        instance WebRtcVoiceEngine
+        instance WebRtcVideoEngine
+    end note
+WebRTC-> WebRTC : CreateModularPeerConnectionFactory
+WebRTC -> PeerConnectionFactory : Create
+PeerConnectionFactory -> ConnectionContext : Create
+    note left of ConnectionContext
+        create network_thread_ 
+        create worker_thread_
+        create signaling_thread_
+        assign media_engine_
+        instance ChannelManager
+    end note
+PeerConnectionFactory -> PeerConnectionFactory : instance 
+Peer.AppA -> PeerConnectionFactory : CreatePeerConnection
+PeerConnectionFactory -> PeerConnection : Create
+PeerConnection -> PeerConnection : instance
+
+#
+PeerConnection -> PeerConnection : Initialize
+PeerConnection -> PeerConnection : ParseIceServers
+PeerConnection --> PeerConnection : InitializePortAllocator_n in network_thread
+PeerConnection -> JsepTransportController : instance
+JsepTransportController -> PeerConnection : connect signal 
+    note left of PeerConnection
+        SignalStandardizedIceConnectionState->PeerConnection::SetStandardizedIceConnectionState
+        SignalConnectionState->PeerConnection::SetConnectionState
+        SignalIceGatheringState->PeerConnection::OnTransportControllerGatheringState
+        SignalIceCandidatesGathered->PeerConnection::OnTransportControllerCandidatesGathered
+        SignalIceCandidateError->PeerConnection::OnTransportControllerCandidateError
+        SignalIceCandidatesRemoved->PeerConnection::OnTransportControllerCandidatesRemoved
+        SignalDtlsHandshakeError->PeerConnection::OnTransportControllerDtlsHandshakeError
+        SignalIceCandidatePairChanged->PeerConnection::OnTransportControllerCandidateChanged
+        SignalIceConnectionState->OnTransportControllerConnectionState
+    end note
+PeerConnection -> JsepTransportController: SetIceConfig
+PeerConnection-> SdpOfferAnswerHandler : Create
+PeerConnection -> RtpTransmissionManager : instance
+PeerConnection -> RtpTransceiver : instance(audio_Transceiver)
+PeerConnection -> RtpTransceiver : instance(video_Transceiver)
+PeerConnection -> RtpTransmissionManager : TransceiverList.Add(audio_Transceiver)
+PeerConnection -> RtpTransmissionManager : TransceiverList.Add(video_Transceiver)
+
+
+#
+Peer.AppA -> PeerConnectionFactory : CreateAudioTrack(label,AudioSource,options)
+Peer.AppA -> PeerConnection : AddTrack(audio_track)
+Peer.AppA -> PeerConnectionFactory : CreateVideoTrack(label,VideoTrackSource)
+Peer.AppA -> VideoTrack : AddOrUpdateSink
+    note right of Peer.AppA 
+        VideoTrack's Sink -> Peer.AppA Render
+    end note
+Peer.AppA -> PeerConnection : AddTrack(video_track)
+Peer.AppA -> PeerConnection : CreateOffer
+    note right of Peer.AppA 
+        CreateOffer(Observer=Peer.AppA)
+    end note
+PeerConnection -> SdpOfferAnswerHandler : CreateOffer
+    note right of SdpOfferAnswerHandler 
+        DoCreateOffer
+        GetOptionsForOffer
+        GetOptionsForUnifiedPlanOffer
+        GetMediaDescriptionOptionsForTransceiver
+            Find RtpTransceiver by mid
+            build each session_option
+            push session_option into session_options
+    end note
+SdpOfferAnswerHandler -> SdpOfferAnswerHandler : GetMediaDescriptionOptionsForTransceiver(MEDIA_TYPE_AUDIO)
+    note right of SdpOfferAnswerHandler
+        enum MediaType {
+          MEDIA_TYPE_AUDIO,
+          MEDIA_TYPE_VIDEO,
+          MEDIA_TYPE_DATA,
+          MEDIA_TYPE_UNSUPPORTED
+        };
+    end note
+SdpOfferAnswerHandler -> RtpTransceiver : get params info
+    note right of SdpOfferAnswerHandler
+        media_description_options
+            transceiver.media_type
+            transceiver.direction
+            transceiver.codec_preferences
+            transceiver.HeaderExtensionsToOffer
+            sender_options
+                transceiver.sender()id()
+                transceiver.sender().id()
+                transceiver.GetParametersInternal().encodings
+                build rids/SimulcastLayerList
+    end note
+SdpOfferAnswerHandler -> SdpOfferAnswerHandler : GetMediaDescriptionOptionsForTransceiver(MEDIA_TYPE_VIDEO)
+SdpOfferAnswerHandler -> SdpOfferAnswerHandler : GetMediaDescriptionOptionsForTransceiver(MEDIA_TYPE_DATA)
+SdpOfferAnswerHandler -> SdpOfferAnswerHandler : GetMediaDescriptionOptionsForTransceiver(MEDIA_TYPE_UNSUPPORTED)
+SdpOfferAnswerHandler -> SdpOfferAnswerHandler : build ice
+    note right of SdpOfferAnswerHandler
+        session_options->rtcp_cname = rtcp_cname_;
+        session_options->crypto_options = pc_->GetCryptoOptions();
+        session_options->pooled_ice_credentials = PortAllocator::GetPooledIceCredentials
+        session_options->offer_extmap_allow_mixed = pc_->configuration()->offer_extmap_allow_mixed;
+        session_options->use_obsolete_sctp_sdp = offer_answer_options.use_obsolete_sctp_sdp;
+    end note
+SdpOfferAnswerHandler -> WebRtcSessionDescriptionFactory : CreateOffer/InternalCreateOffer
+WebRtcSessionDescriptionFactory -> MediaSessionDescriptionFactory: CreateOffer
+WebRtcSessionDescriptionFactory -> Peer.AppA : OnSuccess
+Peer.AppA -> PeerConnection : SetLocalDescription
+Peer.AppA -> Signalling : SendSDP
+Signalling -> Peer.AppB : SendSDP
+Peer.AppB -> Peer.AppB : InitializePeerConnection
+    note left of Peer.AppB
+        - InitializePeerConnection
+        - CreateSessionDescription(from sdp)
+        - PeerConnection.SetRemoteDescription
+        - PeerConnection.CreateAnswer
+        - Peer.AppB.OnSuccess
+        - Peer.AppB.SetLocalDescription
+    end note
+Peer.AppB -> Signalling : SendSDP
+Signalling -> Peer.AppA : SendSDP
+Peer.AppA -> PeerConnection : SetRemoteDescription
+PeerConnection -> SdpOfferAnswerHandler : SetRemoteDescription
+
